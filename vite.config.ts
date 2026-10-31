@@ -1,0 +1,88 @@
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react-swc";
+import path from "path";
+import { VitePWA } from "vite-plugin-pwa";
+import { prerenderPosts } from "./scripts/prerender-posts";
+
+// https://vitejs.dev/config/
+export default defineConfig(({ mode }) => ({
+  // GitHub Pages serves the app under /<repo-name>/; the main site serves it at the root.
+  base: process.env.GITHUB_PAGES_BASE_PATH || "/",
+  server: {
+    host: "::",
+    port: 8080,
+  },
+  plugins: [
+    react(),
+    prerenderPosts(),
+    VitePWA({
+      registerType: "autoUpdate",
+      includeAssets: ["favicon.ico", "pwa-192x192.png", "pwa-512x512.png"],
+      manifest: {
+        name: "Chin Bethel Church",
+        short_name: "CBC",
+        description: "Chin Bethel Church – Faith, Worship, Community in Elkridge, MD",
+        theme_color: "#1a1a2e",
+        background_color: "#1a1a2e",
+        display: "standalone",
+        orientation: "portrait",
+        scope: process.env.GITHUB_PAGES_BASE_PATH || "/",
+        start_url: process.env.GITHUB_PAGES_BASE_PATH || "/",
+        icons: [
+          {
+            src: "pwa-192x192.png",
+            sizes: "192x192",
+            type: "image/png",
+          },
+          {
+            src: "pwa-512x512.png",
+            sizes: "512x512",
+            type: "image/png",
+          },
+          {
+            src: "pwa-512x512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "maskable",
+          },
+        ],
+      },
+      workbox: {
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5 MiB
+        globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
+        runtimeCaching: [
+          {
+            urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
+            handler: "CacheFirst",
+            options: {
+              cacheName: "google-fonts-cache",
+              expiration: {
+                maxEntries: 10,
+                maxAgeSeconds: 60 * 60 * 24 * 365,
+              },
+            },
+          },
+          {
+            urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
+            handler: "CacheFirst",
+            options: {
+              cacheName: "gstatic-fonts-cache",
+              expiration: {
+                maxEntries: 10,
+                maxAgeSeconds: 60 * 60 * 24 * 365,
+              },
+            },
+          },
+        ],
+      },
+    }),
+  ].filter(Boolean),
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+    },
+  },
+}));

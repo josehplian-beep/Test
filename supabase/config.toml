@@ -1,0 +1,7 @@
+project_id = "auztoefiuddwerfbpcpm"
+
+[functions.mysql-sync]
+verify_jwt = true
+
+[functions.send-inquiry]
+verify_jwt = false

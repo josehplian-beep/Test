@@ -1,0 +1,380 @@
+import { useState, useEffect, useRef } from "react";
+import { useParams, useNavigate, Link } from "react-router-dom";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
+import { ArrowLeft, Upload, GraduationCap, User } from "lucide-react";
+import { StudentAvatar } from "@/components/StudentAvatar";
+
+interface Class {
+  id: string;
+  class_name: string;
+}
+
+interface Teacher {
+  id: string;
+  full_name: string;
+  photo_url: string | null;
+  class_name: string;
+}
+
+export default function AdminSchoolStudentEdit() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [classes, setClasses] = useState<Class[]>([]);
+  const [assignedClasses, setAssignedClasses] = useState<string[]>([]);
+  const [teachers, setTeachers] = useState<Teacher[]>([]);
+  const [formData, setFormData] = useState({
+    full_name: "",
+    date_of_birth: "",
+    guardian_name: "",
+    guardian_phone: "",
+    photo_url: "",
+    notes: "",
+  });
+
+  useEffect(() => {
+    fetchData();
+  }, [id]);
+
+  const fetchData = async () => {
+    try {
+      const [studentRes, classesRes, assignedRes] = await Promise.all([
+        supabase.from("students").select("*").eq("id", id).single(),
+        supabase.from("classes").select("id, class_name").order("class_name"),
+        supabase.from("student_classes").select("class_id").eq("student_id", id)
+      ]);
+
+      if (studentRes.error) throw studentRes.error;
+      if (classesRes.error) throw classesRes.error;
+      
+      setFormData({
+        full_name: studentRes.data.full_name || "",
+        date_of_birth: studentRes.data.date_of_birth || "",
+        guardian_name: studentRes.data.guardian_name || "",
+        guardian_phone: studentRes.data.guardian_phone || "",
+        photo_url: studentRes.data.photo_url || "",
+        notes: studentRes.data.notes || "",
+      });
+      
+      setClasses(classesRes.data || []);
+      const assignedClassIds = (assignedRes.data || []).map(ac => ac.class_id);
+      setAssignedClasses(assignedClassIds);
+
+      // Fetch teachers for assigned classes
+      if (assignedClassIds.length > 0) {
+        const { data: classTeachersData } = await supabase
+          .from("class_teachers")
+          .select("teacher_id, class_id, classes(class_name)")
+          .in("class_id", assignedClassIds);
+
+        if (classTeachersData && classTeachersData.length > 0) {
+          const teacherIds = [...new Set(classTeachersData.map(ct => ct.teacher_id))];
+          
+          const { data: teachersData } = await supabase
+            .from("teachers")
+            .select("id, full_name, photo_url")
+            .in("id", teacherIds);
+
+          if (teachersData) {
+            const teachersList: Teacher[] = classTeachersData.map(ct => {
+              const teacher = teachersData.find(t => t.id === ct.teacher_id);
+              return {
+                id: ct.teacher_id,
+                full_name: teacher?.full_name || "Unknown",
+                photo_url: teacher?.photo_url || null,
+                class_name: (ct.classes as any)?.class_name || "Unknown Class"
+              };
+            });
+            setTeachers(teachersList);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error fetching data:", error);
+      toast.error("Failed to load student");
+      navigate("/admin/school/students");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleToggleClass = (classId: string) => {
+    setAssignedClasses(prev =>
+      prev.includes(classId)
+        ? prev.filter(id => id !== classId)
+        : [...prev, classId]
+    );
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      toast.error("Please upload an image file");
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${id}-${Date.now()}.${fileExt}`;
+      const filePath = `${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('student-photos')
+        .upload(filePath, file, { upsert: true });
+
+      if (uploadError) throw uploadError;
+
+      // Store just the file path, not the public URL (bucket is now private)
+      setFormData({ ...formData, photo_url: filePath });
+      toast.success("Photo uploaded successfully");
+    } catch (error) {
+      console.error("Error uploading photo:", error);
+      toast.error("Failed to upload photo");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+
+    try {
+      // Update student info
+      const { error: updateError } = await supabase
+        .from("students")
+        .update(formData)
+        .eq("id", id);
+
+      if (updateError) throw updateError;
+
+      // Delete existing class assignments
+      const { error: deleteError } = await supabase
+        .from("student_classes")
+        .delete()
+        .eq("student_id", id);
+
+      if (deleteError) throw deleteError;
+
+      // Insert new class assignments
+      if (assignedClasses.length > 0) {
+        const { error: insertError } = await supabase
+          .from("student_classes")
+          .insert(assignedClasses.map(classId => ({
+            student_id: id,
+            class_id: classId,
+            year: new Date().getFullYear().toString()
+          })));
+
+        if (insertError) throw insertError;
+      }
+
+      toast.success("Student updated successfully");
+      navigate("/admin/school/students");
+    } catch (error) {
+      console.error("Error updating student:", error);
+      toast.error("Failed to update student");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return <div className="p-6 text-center">Loading...</div>;
+  }
+
+  return (
+    <div className="p-6 space-y-6 max-w-4xl">
+        <div className="flex items-center gap-4">
+          <Button variant="ghost" size="icon" onClick={() => navigate("/admin/school/students")}>
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <div>
+            <h1 className="text-3xl font-bold">Edit Student</h1>
+            <p className="text-muted-foreground">Update student information</p>
+          </div>
+        </div>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Student Information</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="full_name">Full Name *</Label>
+                  <Input
+                    id="full_name"
+                    required
+                    value={formData.full_name}
+                    onChange={(e) => setFormData({ ...formData, full_name: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="date_of_birth">Date of Birth *</Label>
+                  <Input
+                    id="date_of_birth"
+                    type="date"
+                    required
+                    value={formData.date_of_birth}
+                    onChange={(e) => setFormData({ ...formData, date_of_birth: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="guardian_name">Guardian Name *</Label>
+                  <Input
+                    id="guardian_name"
+                    required
+                    value={formData.guardian_name}
+                    onChange={(e) => setFormData({ ...formData, guardian_name: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="guardian_phone">Guardian Phone *</Label>
+                  <Input
+                    id="guardian_phone"
+                    required
+                    value={formData.guardian_phone}
+                    onChange={(e) => setFormData({ ...formData, guardian_phone: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="space-y-4">
+                <Label>Profile Photo</Label>
+                <div className="flex items-center gap-4">
+                  <StudentAvatar 
+                    photoUrl={formData.photo_url} 
+                    fullName={formData.full_name}
+                    className="h-24 w-24"
+                    fallbackClassName="text-2xl"
+                  />
+                  <div className="flex-1">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleFileUpload}
+                      className="hidden"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploading}
+                    >
+                      <Upload className="h-4 w-4 mr-2" />
+                      {uploading ? "Uploading..." : "Upload Photo"}
+                    </Button>
+                    <p className="text-sm text-muted-foreground mt-2">
+                      JPG, PNG or WEBP (max 5MB)
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="notes">Notes</Label>
+                <Textarea
+                  id="notes"
+                  value={formData.notes}
+                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+                  rows={4}
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button type="submit" disabled={saving}>
+                  {saving ? "Saving..." : "Save Changes"}
+                </Button>
+                <Button type="button" variant="outline" onClick={() => navigate("/admin/school/students")}>
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Class Assignments</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {classes.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No classes available</p>
+            ) : (
+              <div className="space-y-3">
+                {classes.map((cls) => (
+                  <div key={cls.id} className="flex items-center space-x-2">
+                    <Checkbox
+                      id={`class-${cls.id}`}
+                      checked={assignedClasses.includes(cls.id)}
+                      onCheckedChange={() => handleToggleClass(cls.id)}
+                    />
+                    <Label
+                      htmlFor={`class-${cls.id}`}
+                      className="text-sm font-normal cursor-pointer"
+                    >
+                      {cls.class_name}
+                    </Label>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Teachers Section */}
+        {teachers.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <GraduationCap className="h-5 w-5 text-primary" />
+                Teachers
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {teachers.map((teacher, index) => (
+                  <Link
+                    key={`${teacher.id}-${index}`}
+                    to={`/admin/school/teachers/${teacher.id}`}
+                    className="flex items-center gap-3 p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors group"
+                  >
+                    <Avatar className="h-10 w-10 border-2 border-primary/20">
+                      <AvatarImage src={teacher.photo_url || undefined} alt={teacher.full_name} />
+                      <AvatarFallback className="bg-primary/10 text-primary">
+                        <User className="h-5 w-5" />
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm group-hover:text-primary transition-colors truncate">
+                        {teacher.full_name}
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {teacher.class_name}
+                      </p>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+  );
+}
